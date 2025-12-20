@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: ks-redeemer/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: 3. Install npm dependencies
         run: npm install
