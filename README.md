@@ -59,6 +59,12 @@ Example:
 node redeem.js PROMO-2025-XYZ
 ```
 
+### Using Environment Variables (GitHub Secrets)
+
+For better security (especially in CI/CD), you can provide IDs via the `PLAYER_IDS` environment variable instead of using `ids.txt`. THe script will look for `ids.txt` first, and if not found (or empty), it will look for `PLAYER_IDS`.
+
+In GitHub Actions, simply add a Repository Secret named `PLAYER_IDS` containing your list of IDs.
+
 ### Reporting
 A report file named `report-YYYY-MM-DDTHH-mm-ss-ms.json` will be generated in the project directory. It contains the status, error code, and timestamp for every ID processed.
 

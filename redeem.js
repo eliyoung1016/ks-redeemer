@@ -87,16 +87,27 @@ async function clickByText(page, rx, timeout = 5000) {
 }
 
 (async () => {
-  // Read IDs from ids.txt (one per line)
+  // Read IDs from ids.txt (one per line) or ENV
   let ids = [];
   try {
-    ids = fs.readFileSync('ids.txt', 'utf8')
-      .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (fs.existsSync('ids.txt')) {
+      ids = fs.readFileSync('ids.txt', 'utf8')
+        .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    }
   } catch (e) {
-    // If file doesn't exist, we can't proceed but we'll let existing check handle empty list or add explicit error
     log(`Error reading ids.txt: ${e.message}`);
   }
-  if (!ids.length) { console.error('ids.txt is empty or missing'); process.exit(1); }
+
+  // Fallback to environment variable if FILE is missing or empty
+  if (!ids.length && process.env.PLAYER_IDS) {
+    log('Reading IDs from PLAYER_IDS environment variable...');
+    ids = process.env.PLAYER_IDS.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+  }
+
+  if (!ids.length) {
+    console.error('Error: No IDs found in ids.txt or PLAYER_IDS environment variable.');
+    process.exit(1);
+  }
 
   // Parse gift codes from CLI (supports one or many; space/comma separated)
   const codes = parseGiftCodes(process.argv);

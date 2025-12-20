@@ -29,6 +29,8 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: 5. Run the redemption script
+        env:
+          PLAYER_IDS: ${{ secrets.PLAYER_IDS }}
         run: |
           node redeem.js ${{ github.event.inputs.gift_code }}
         
