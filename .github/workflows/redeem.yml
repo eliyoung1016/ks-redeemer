@@ -1,0 +1,45 @@
+name: Redeem KingShot Code
+on:
+  workflow_dispatch:
+    inputs:
+      gift_code:
+        description: 'The gift code to redeem'
+        required: true
+        type: string
+
+jobs:
+  redeem-code:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./ks-redeemer
+
+    steps:
+      - name: 1. Check out repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: ks-redeemer/package-lock.json
+
+      - name: 3. Install npm dependencies
+        run: npm install
+
+      - name: 4. Install Playwright browsers and dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: 5. Run the redemption script
+        run: |
+          node redeem.js ${{ github.event.inputs.gift_code }}
+        
+      - name: 6. Upload redemption report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redemption-report
+          path: ks-redeemer/report-*.json
+          if-no-files-found: ignore
