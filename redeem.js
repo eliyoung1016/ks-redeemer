@@ -58,6 +58,10 @@ async function redeemOnce(page, fid, gift) {
   try {
     const ctype = resp.headers()['content-type'] || '';
     payload = ctype.includes('application/json') ? await resp.json() : await resp.text();
+    // Omit 'data' field from raw payload to reduce noise
+    if (payload && typeof payload === 'object' && 'data' in payload) {
+      delete payload.data;
+    }
   } catch (e) {
     return { status: 'UNKNOWN', detail: `Response parse error: ${e.message}` };
   }
@@ -107,70 +111,98 @@ async function clickByText(page, rx, timeout = 5000) {
   const reportName = `report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   log(`Report will be saved to ${reportName}`);
 
+  const CONCURRENCY = 3;
   const browser = await chromium.launch({ headless: false });
-  const page = await browser.newPage();
-  await page.goto(SITE, { waitUntil: 'domcontentloaded' });
+  // Create a shared queue (copy of ids)
+  const queue = [...ids];
 
-  for (const fid of ids) {
-    log(`\n=== Player ${fid} ===`);
-    for (const gift of codes) {
-      log(`Redeem: ${gift}`);
-      let attempts = 0;
-      const MAX_RETRIES = 3;
-      let successOrFatal = false;
-      let finalResult = { status: 'UNKNOWN', code: -1, detail: 'Not processed' };
+  // Worker function
+  const runWorker = async (workerId) => {
+    const page = await browser.newPage();
+    await page.goto(SITE, { waitUntil: 'domcontentloaded' });
 
-      while (attempts < MAX_RETRIES && !successOrFatal) {
-        attempts++;
-        if (attempts > 1) log(`  Retry attempt ${attempts}/${MAX_RETRIES}...`);
+    // Process until queue is empty
+    while (queue.length > 0) {
+      // atomic pop due to single-threaded JS event loop
+      const fid = queue.shift();
+      if (!fid) break;
 
-        try {
-          finalResult = await redeemOnce(page, fid, gift);
-          const { status, detail, code } = finalResult;
+      log(`[Worker ${workerId}] Starting Player ${fid}`);
 
-          // Check if result is final (Success or Already Redeemed or Code 0)
-          if (code === 20000 || code === 40008 || code === 0) {
-            log(`→ ${status} :: ${detail} :: ${code}`);
-            successOrFatal = true;
-          } else {
-            log(`→ ${status} (Code: ${code}) :: ${detail}`);
-            console.warn(`  [Retryable] Unexpected code ${code}.`);
+      for (const gift of codes) {
+        log(`[Worker ${workerId}] Redeem: ${gift} for ${fid}`);
+        let attempts = 0;
+        const MAX_RETRIES = 3;
+        let successOrFatal = false;
+        let finalResult = { status: 'UNKNOWN', code: -1, detail: 'Not processed' };
+
+        while (attempts < MAX_RETRIES && !successOrFatal) {
+          attempts++;
+          if (attempts > 1) log(`[Worker ${workerId}]   Retry attempt ${attempts}/${MAX_RETRIES}...`);
+
+          try {
+            finalResult = await redeemOnce(page, fid, gift);
+            const { status, detail, code } = finalResult;
+
+            // Check if result is final (Success or Already Redeemed or Code 0)
+            if (code === 20000 || code === 40008 || code === 0) {
+              log(`[Worker ${workerId}] → ${status} :: ${detail} :: ${code}`);
+              successOrFatal = true;
+            } else {
+              log(`[Worker ${workerId}] → ${status} (Code: ${code}) :: ${detail}`);
+              console.warn(`[Worker ${workerId}]   [Retryable] Unexpected code ${code}.`);
+            }
+
+          } catch (e) {
+            console.warn(`[Worker ${workerId}]   Issue on ${fid} / ${gift}: ${e.message}`);
+            finalResult = { status: 'ERROR', detail: e.message, code: -999 };
           }
 
+          if (!successOrFatal && attempts < MAX_RETRIES) {
+            await page.waitForTimeout(1000);
+          }
+        }
+
+        results.push({
+          playerId: fid,
+          giftCode: gift,
+          timestamp: new Date().toISOString(),
+          ...finalResult
+        });
+
+        // Progressive save (sync write is safe enough for this scale)
+        fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
+
+        // ALWAYS refresh after processing a code (whether success or fail)
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(800);
         } catch (e) {
-          console.warn(`  Issue on ${fid} / ${gift}: ${e.message}`);
-          finalResult = { status: 'ERROR', detail: e.message, code: -999 };
-        }
-
-        if (!successOrFatal && attempts < MAX_RETRIES) {
-          await page.waitForTimeout(1000);
+          console.error(`[Worker ${workerId}] Error reloading page:`, e.message);
         }
       }
 
-      results.push({
-        playerId: fid,
-        giftCode: gift,
-        timestamp: new Date().toISOString(),
-        ...finalResult
-      });
-
-      //Progressive save
-      fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
-
-      // ALWAYS refresh after processing a code (whether success or fail)
-      try {
-        await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(800);
-      } catch (e) {
-        console.error('Error reloading page:', e.message);
-      }
+      const MIN_DELAY = 2000;
+      const MAX_DELAY = 5000;
+      const waitTime = Math.floor(Math.random() * (MAX_DELAY - MIN_DELAY + 1)) + MIN_DELAY;
+      log(`[Worker ${workerId}] Waiting ${waitTime}ms...`);
+      await page.waitForTimeout(waitTime);
     }
+
+    await page.close();
+  };
+
+  log(`Starting ${CONCURRENCY} workers...`);
+  const workers = [];
+  for (let i = 1; i <= CONCURRENCY; i++) {
+    workers.push(runWorker(i));
   }
+
+  await Promise.all(workers);
 
   log('\nAll done.');
   await browser.close();
 
-  // Final report write (optional, but good to have a final confirmation)
-  // fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
+  // Final report write
   log(`Final report updated: ${reportName}`);
 })();
