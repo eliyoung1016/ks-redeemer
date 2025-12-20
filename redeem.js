@@ -112,7 +112,9 @@ async function clickByText(page, rx, timeout = 5000) {
   log(`Report will be saved to ${reportName}`);
 
   const CONCURRENCY = 3;
-  const browser = await chromium.launch({ headless: false });
+  // Use headless mode in CI, headful mode locally for debugging
+  const isCI = !!process.env.CI;
+  const browser = await chromium.launch({ headless: isCI });
   // Create a shared queue (copy of ids)
   const queue = [...ids];
 
