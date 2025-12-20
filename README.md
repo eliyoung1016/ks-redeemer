@@ -19,6 +19,7 @@ Clone the repository and install dependencies (if any):
 git clone https://github.com/eliyoung1016/ks-redeemer.git
 cd ks-redeemer
 npm install
+npx playwright install
 ```
 
 ## How to use

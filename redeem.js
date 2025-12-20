@@ -5,9 +5,15 @@ const fs = require('fs');
 const SITE = 'https://ks-giftcode.centurygame.com/';
 const REDEEM_URL = 'https://kingshot-giftcode.centurygame.com/api/gift_code';
 
+function log(msg) {
+  const ts = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  console.log(`[${ts}] ${msg}`);
+}
+
 function classifyRedeem(payload) {
-  if (payload?.code === 0 && payload?.err_code === 20000) {
-    return { status: 'SUCCESS', reason: payload?.msg || 'SUCCESS', code: payload.err_code };
+  // Success can be code 0 + err_code 20000 OR just code 0 + err_code 0 (or missing)
+  if (payload?.code === 0 && (payload?.err_code === 20000 || !payload?.err_code)) {
+    return { status: 'SUCCESS', reason: payload?.msg || 'SUCCESS', code: payload.err_code || 0 };
   }
   if (payload?.code === 1 && payload?.err_code === 40008) {
     return { status: 'ALREADY_REDEEMED', reason: payload?.msg || 'RECEIVED', code: payload.err_code };
@@ -16,7 +22,8 @@ function classifyRedeem(payload) {
   return {
     status: 'UNKNOWN',
     reason: payload?.msg || (typeof payload === 'string' ? payload : JSON.stringify(payload)),
-    code: payload.err_code
+    code: payload?.err_code !== undefined ? payload.err_code : (payload?.code !== undefined ? payload.code : -1),
+    raw: payload
   };
 }
 
@@ -55,8 +62,10 @@ async function redeemOnce(page, fid, gift) {
     return { status: 'UNKNOWN', detail: `Response parse error: ${e.message}` };
   }
 
-  const { status, reason, code } = classifyRedeem(payload);
-  return { status, detail: reason, raw: payload, code };
+  const { status, reason, code, raw } = classifyRedeem(payload);
+  // If unknown, add raw payload to detail for debugging
+  const detail = status === 'UNKNOWN' ? `${reason} [RAW: ${JSON.stringify(raw)}]` : reason;
+  return { status, detail, raw: payload, code };
 }
 
 function parseGiftCodes(argv) {
@@ -75,9 +84,15 @@ async function clickByText(page, rx, timeout = 5000) {
 
 (async () => {
   // Read IDs from ids.txt (one per line)
-  const ids = fs.readFileSync('ids.txt', 'utf8')
-    .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  if (!ids.length) { console.error('ids.txt is empty'); process.exit(1); }
+  let ids = [];
+  try {
+    ids = fs.readFileSync('ids.txt', 'utf8')
+      .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  } catch (e) {
+    // If file doesn't exist, we can't proceed but we'll let existing check handle empty list or add explicit error
+    log(`Error reading ids.txt: ${e.message}`);
+  }
+  if (!ids.length) { console.error('ids.txt is empty or missing'); process.exit(1); }
 
   // Parse gift codes from CLI (supports one or many; space/comma separated)
   const codes = parseGiftCodes(process.argv);
@@ -86,44 +101,61 @@ async function clickByText(page, rx, timeout = 5000) {
     process.exit(1);
   }
 
-  console.log(`IDs: ${ids.length} | Gift codes: ${codes.join(', ')}`);
+  log(`IDs: ${ids.length} | Gift codes: ${codes.join(', ')}`);
+
+  const results = [];
+  const reportName = `report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  log(`Report will be saved to ${reportName}`);
 
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
   await page.goto(SITE, { waitUntil: 'domcontentloaded' });
 
   for (const fid of ids) {
-    console.log(`\n=== Player ${fid} ===`);
+    log(`\n=== Player ${fid} ===`);
     for (const gift of codes) {
-      console.log(`Redeem: ${gift}`);
+      log(`Redeem: ${gift}`);
       let attempts = 0;
       const MAX_RETRIES = 3;
       let successOrFatal = false;
+      let finalResult = { status: 'UNKNOWN', code: -1, detail: 'Not processed' };
 
       while (attempts < MAX_RETRIES && !successOrFatal) {
         attempts++;
-        if (attempts > 1) console.log(`  Retry attempt ${attempts}/${MAX_RETRIES}...`);
+        if (attempts > 1) log(`  Retry attempt ${attempts}/${MAX_RETRIES}...`);
 
         try {
-          const { status, detail, code } = await redeemOnce(page, fid, gift);
+          finalResult = await redeemOnce(page, fid, gift);
+          const { status, detail, code } = finalResult;
 
-          // Check if result is final (Success or Already Redeemed)
-          if (code === 20000 || code === 40008) {
-            console.log(`→ ${status} :: ${detail} :: ${code}`);
+          // Check if result is final (Success or Already Redeemed or Code 0)
+          if (code === 20000 || code === 40008 || code === 0) {
+            log(`→ ${status} :: ${detail} :: ${code}`);
             successOrFatal = true;
           } else {
-            console.log(`→ ${status} (Code: ${code}) :: ${detail}`);
+            log(`→ ${status} (Code: ${code}) :: ${detail}`);
             console.warn(`  [Retryable] Unexpected code ${code}.`);
           }
 
         } catch (e) {
           console.warn(`  Issue on ${fid} / ${gift}: ${e.message}`);
+          finalResult = { status: 'ERROR', detail: e.message, code: -999 };
         }
 
         if (!successOrFatal && attempts < MAX_RETRIES) {
           await page.waitForTimeout(1000);
         }
       }
+
+      results.push({
+        playerId: fid,
+        giftCode: gift,
+        timestamp: new Date().toISOString(),
+        ...finalResult
+      });
+
+      //Progressive save
+      fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
 
       // ALWAYS refresh after processing a code (whether success or fail)
       try {
@@ -135,6 +167,10 @@ async function clickByText(page, rx, timeout = 5000) {
     }
   }
 
-  console.log('\nAll done.');
+  log('\nAll done.');
   await browser.close();
+
+  // Final report write (optional, but good to have a final confirmation)
+  // fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
+  log(`Final report updated: ${reportName}`);
 })();
