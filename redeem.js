@@ -66,9 +66,9 @@ function parseGiftCodes(argv) {
 }
 
 async function clickByText(page, rx, timeout = 5000) {
-  try { await page.getByText(rx).first().click({ timeout }); return true; } catch {}
+  try { await page.getByText(rx).first().click({ timeout }); return true; } catch { }
   for (const f of page.frames()) {
-    try { await f.getByText(rx).first().click({ timeout }); return true; } catch {}
+    try { await f.getByText(rx).first().click({ timeout }); return true; } catch { }
   }
   return false;
 }
@@ -96,15 +96,41 @@ async function clickByText(page, rx, timeout = 5000) {
     console.log(`\n=== Player ${fid} ===`);
     for (const gift of codes) {
       console.log(`Redeem: ${gift}`);
+      let attempts = 0;
+      const MAX_RETRIES = 3;
+      let successOrFatal = false;
+
+      while (attempts < MAX_RETRIES && !successOrFatal) {
+        attempts++;
+        if (attempts > 1) console.log(`  Retry attempt ${attempts}/${MAX_RETRIES}...`);
+
+        try {
+          const { status, detail, code } = await redeemOnce(page, fid, gift);
+
+          // Check if result is final (Success or Already Redeemed)
+          if (code === 20000 || code === 40008) {
+            console.log(`→ ${status} :: ${detail} :: ${code}`);
+            successOrFatal = true;
+          } else {
+            console.log(`→ ${status} (Code: ${code}) :: ${detail}`);
+            console.warn(`  [Retryable] Unexpected code ${code}.`);
+          }
+
+        } catch (e) {
+          console.warn(`  Issue on ${fid} / ${gift}: ${e.message}`);
+        }
+
+        if (!successOrFatal && attempts < MAX_RETRIES) {
+          await page.waitForTimeout(1000);
+        }
+      }
+
+      // ALWAYS refresh after processing a code (whether success or fail)
       try {
-        const { status, detail, code } = await redeemOnce(page, fid, gift);
-        console.log(`→ ${status} :: ${detail} :: ${code}`);
-      } catch (e) {
-        console.warn(`Issue on ${fid} / ${gift}: ${e.message}`);
-      } finally {
-        // ALWAYS refresh after each submission (your priority)
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(800);
+      } catch (e) {
+        console.error('Error reloading page:', e.message);
       }
     }
   }
