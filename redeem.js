@@ -28,12 +28,6 @@ function classifyRedeem(payload) {
 }
 
 async function redeemOnce(page, fid, gift) {
-  // wait for the exact API call the moment you click "Confirm"
-  const respPromise = page.waitForResponse(
-    r => r.url().startsWith(REDEEM_URL) && ['POST', 'GET'].includes(r.request().method()),
-    { timeout: 16000 }
-  ).catch(() => null);
-
   // === your existing UI flow ===
   const idBox = page.getByPlaceholder(/player\s*id/i).first();
   await idBox.fill('');
@@ -47,6 +41,12 @@ async function redeemOnce(page, fid, gift) {
   const giftBox = page.getByPlaceholder(/gift\s*code/i).first();
   await giftBox.fill('');
   await giftBox.fill(gift);
+
+  // wait for the exact API call the moment you click "Confirm"
+  const respPromise = page.waitForResponse(
+    r => r.url().startsWith(REDEEM_URL) && ['POST', 'GET'].includes(r.request().method()),
+    { timeout: 16000 }
+  ).catch(() => null);
 
   if (!await clickByText(page, /confirm|redeem/i)) throw new Error('Confirm not found/clickable');
 
