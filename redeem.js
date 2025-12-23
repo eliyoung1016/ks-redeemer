@@ -18,6 +18,9 @@ function classifyRedeem(payload) {
   if (payload?.code === 1 && payload?.err_code === 40008) {
     return { status: 'ALREADY_REDEEMED', reason: payload?.msg || 'RECEIVED', code: payload.err_code };
   }
+  if (payload?.err_code === 40004) {
+    return { status: 'TIMEOUT', reason: payload?.msg || 'TIMEOUT', code: payload.err_code };
+  }
   // fallback
   return {
     status: 'UNKNOWN',
@@ -29,47 +32,52 @@ function classifyRedeem(payload) {
 
 async function redeemOnce(page, fid, gift) {
   // === your existing UI flow ===
-  const idBox = page.getByPlaceholder(/player\s*id/i).first();
-  await idBox.fill('');
-  await idBox.fill(fid);
-  await page.keyboard.press('Tab');
-  await page.waitForTimeout(400);
-
-  if (!await clickByText(page, /login/i)) throw new Error('Login not found/clickable');
-  await page.waitForTimeout(1600);
-
-  const giftBox = page.getByPlaceholder(/gift\s*code/i).first();
-  await giftBox.fill('');
-  await giftBox.fill(gift);
-
-  // wait for the exact API call the moment you click "Confirm"
-  const respPromise = page.waitForResponse(
-    r => r.url().startsWith(REDEEM_URL) && ['POST', 'GET'].includes(r.request().method()),
-    { timeout: 16000 }
-  ).catch(() => null);
-
-  if (!await clickByText(page, /confirm|redeem/i)) throw new Error('Confirm not found/clickable');
-
-  // === parse the API response ===
-  const resp = await respPromise;
-  if (!resp) return { status: 'UNKNOWN', detail: 'No network response captured' };
-
-  let payload;
   try {
-    const ctype = resp.headers()['content-type'] || '';
-    payload = ctype.includes('application/json') ? await resp.json() : await resp.text();
-    // Omit 'data' field from raw payload to reduce noise
-    if (payload && typeof payload === 'object' && 'data' in payload) {
-      delete payload.data;
-    }
-  } catch (e) {
-    return { status: 'UNKNOWN', detail: `Response parse error: ${e.message}` };
-  }
+    const idBox = page.getByPlaceholder(/player\s*id/i).first();
+    await idBox.fill('');
+    await idBox.fill(fid);
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
 
-  const { status, reason, code, raw } = classifyRedeem(payload);
-  // If unknown, add raw payload to detail for debugging
-  const detail = status === 'UNKNOWN' ? `${reason} [RAW: ${JSON.stringify(raw)}]` : reason;
-  return { status, detail, raw: payload, code };
+    if (!await clickByText(page, /login/i)) throw new Error('Login not found/clickable');
+    await page.waitForTimeout(1600);
+
+    const giftBox = page.getByPlaceholder(/gift\s*code/i).first();
+    await giftBox.fill('');
+    await giftBox.fill(gift);
+
+    // wait for the exact API call the moment you click "Confirm"
+    const respPromise = page.waitForResponse(
+      r => r.url().startsWith(REDEEM_URL) && ['POST', 'GET'].includes(r.request().method()),
+      { timeout: 16000 }
+    ).catch(() => null);
+
+    if (!await clickByText(page, /confirm|redeem/i)) throw new Error('Confirm not found/clickable');
+
+    // === parse the API response ===
+    const resp = await respPromise;
+    if (!resp) return { status: 'UNKNOWN', detail: 'No network response captured' };
+
+    let payload;
+    try {
+      const ctype = resp.headers()['content-type'] || '';
+      payload = ctype.includes('application/json') ? await resp.json() : await resp.text();
+      // Omit 'data' field from raw payload to reduce noise
+      if (payload && typeof payload === 'object' && 'data' in payload) {
+        delete payload.data;
+      }
+    } catch (e) {
+      return { status: 'UNKNOWN', detail: `Response parse error: ${e.message}` };
+    }
+
+    const { status, reason, code, raw } = classifyRedeem(payload);
+    // If unknown, add raw payload to detail for debugging
+    const detail = status === 'UNKNOWN' ? `${reason} [RAW: ${JSON.stringify(raw)}]` : reason;
+    return { status, detail, raw: payload, code };
+
+  } catch (e) {
+    return { status: 'ERROR', detail: `UI Error: ${e.message}`, code: -999 };
+  }
 }
 
 function parseGiftCodes(argv) {
@@ -172,7 +180,14 @@ async function clickByText(page, rx, timeout = 5000) {
           }
 
           if (!successOrFatal && attempts < MAX_RETRIES) {
-            await page.waitForTimeout(1000);
+            // RELOAD page to clear any blocking popups/state
+            log(`[Worker ${workerId}]   Refreshing page before retry...`);
+            try {
+              await page.reload({ waitUntil: 'domcontentloaded' });
+              await page.waitForTimeout(1000); // extra buffer
+            } catch (re) {
+              log(`[Worker ${workerId}]   Reload failed: ${re.message}`);
+            }
           }
         }
 
@@ -187,11 +202,14 @@ async function clickByText(page, rx, timeout = 5000) {
         fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
 
         // ALWAYS refresh after processing a code (whether success or fail)
-        try {
-          await page.reload({ waitUntil: 'domcontentloaded' });
-          await page.waitForTimeout(800);
-        } catch (e) {
-          console.error(`[Worker ${workerId}] Error reloading page:`, e.message);
+        // Only if we didn't JUST refresh in the retry loop (successful attempt doesn't refresh at end of loop)
+        if (successOrFatal) {
+          try {
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.waitForTimeout(800);
+          } catch (e) {
+            console.error(`[Worker ${workerId}] Error reloading page:`, e.message);
+          }
         }
       }
 
