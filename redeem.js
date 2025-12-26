@@ -21,6 +21,9 @@ function classifyRedeem(payload) {
   if (payload?.err_code === 40004) {
     return { status: 'TIMEOUT', reason: payload?.msg || 'TIMEOUT', code: payload.err_code };
   }
+  if (payload?.code === 1 && payload?.err_code === 40014) {
+    return { status: 'UNUSABLE_CODE', reason: payload?.msg || 'UNUSABLE_CODE', code: payload.err_code };
+  }
   // fallback
   return {
     status: 'UNKNOWN',
@@ -166,7 +169,7 @@ async function clickByText(page, rx, timeout = 5000) {
             const { status, detail, code } = finalResult;
 
             // Check if result is final (Success or Already Redeemed or Code 0)
-            if (code === 20000 || code === 40008 || code === 0) {
+            if (code === 20000 || code === 40008 || code === 0 || code === 40014) {
               log(`[Worker ${workerId}] → ${status} :: ${detail} :: ${code}`);
               successOrFatal = true;
             } else {
@@ -200,6 +203,11 @@ async function clickByText(page, rx, timeout = 5000) {
 
         // Progressive save (sync write is safe enough for this scale)
         fs.writeFileSync(reportName, JSON.stringify(results, null, 2));
+
+        if (finalResult.code === 40014) {
+          log(`[Worker ${workerId}] Critical error 40014 (Invalid Gift Code) detected. Stopping all operations.`);
+          process.exit(1);
+        }
 
         // ALWAYS refresh after processing a code (whether success or fail)
         // Only if we didn't JUST refresh in the retry loop (successful attempt doesn't refresh at end of loop)
